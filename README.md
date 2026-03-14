@@ -1,8 +1,8 @@
 
-# 🖥️ TARJIMTECH Arabic Localization  
+# برنامج تعليمي تفاعلي للمترجم التقني | Python Terminal | Arabic Localization 
 ### محتوى تعليمي تفاعلي خاص بالترجمة التقنية | برمجة: دلال نصرالله
 
----
+
 
 ## المبرمجة
 
