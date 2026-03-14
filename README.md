@@ -1,5 +1,5 @@
-cat > ~/Downloads/README.md << 'ENDOFFILE'
-# 🖥️ TARJIMTECH Intel Terminal
+
+# 🖥️ TARJIMTECH Arabic Localisaion 
 ### محتوى تعليمي تفاعلي خاص بالترجمة التقنية | برمجة: دلال نصرالله
 
 ---
