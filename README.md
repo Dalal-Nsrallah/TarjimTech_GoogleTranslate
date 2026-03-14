@@ -1,5 +1,5 @@
 
-# 🖥️ TARJIMTECH Arabic Localisaion 
+# 🖥️ TARJIMTECH Arabic Localization  
 ### محتوى تعليمي تفاعلي خاص بالترجمة التقنية | برمجة: دلال نصرالله
 
 ---
