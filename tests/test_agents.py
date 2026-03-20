@@ -622,7 +622,6 @@ def test_builder_with_discovery_learning():
     tmp = tempfile.mkdtemp()
     try:
         discovery = DiscoveryAgent(data_dir=tmp)
-        # إضافة أخطاء وتوليد قواعد
         for i in range(5):
             discovery.collect_error(
                 agent="qa", category="literal",
@@ -635,6 +634,216 @@ def test_builder_with_discovery_learning():
         learned = builder.learn_from_discovery()
         assert learned["status"] == "learned"
         print("  ✓ التعلّم من المكتشف")
+    finally:
+        shutil.rmtree(tmp)
+
+
+def test_builder_no_release_without_approval():
+    """اختبار أن التطبيق لا يُصدر بدون موافقة."""
+    tmp = tempfile.mkdtemp()
+    try:
+        builder = BuilderAgent(data_dir=tmp)
+        app = builder.build_app("spellchecker")
+        assert app is not None
+        assert app.status == "draft"
+        # بدون callback — يبقى في الانتظار
+        result = builder.request_release(app.app_id)
+        assert result["status"] == "awaiting"
+        assert app.status == "awaiting_approval"
+        # لا يعمل لأنه ليس released
+        run_result = builder.run_app(app.app_id, "نص اختبار")
+        assert run_result["processed"] is False
+        print("  ✓ لا إصدار بدون موافقة")
+    finally:
+        shutil.rmtree(tmp)
+
+
+def test_builder_approve_release():
+    """اختبار الموافقة على الإصدار."""
+    tmp = tempfile.mkdtemp()
+    try:
+        def user_approves(proposal):
+            return {"decision": "approve", "notes": "ممتاز", "approved_by": "دلال"}
+
+        builder = BuilderAgent(data_dir=tmp, release_callback=user_approves)
+        app = builder.build_app("spellchecker")
+        # حوّل لـ testing يدوياً (عادةً يحصل بعد الاختبار)
+        app.status = "testing"
+        app.test_results = {"accuracy": 0.9}
+
+        result = builder.request_release(app.app_id, callback=user_approves)
+        assert result["status"] == "released"
+        assert "سرية" in result["message"] or "سري" in result["message"]
+        assert app.status == "released"
+        assert app.privacy_level == "local_only"
+        assert app.approved_by == "دلال"
+        print("  ✓ الموافقة على الإصدار بسرية")
+    finally:
+        shutil.rmtree(tmp)
+
+
+def test_builder_reject_release():
+    """اختبار رفض الإصدار."""
+    tmp = tempfile.mkdtemp()
+    try:
+        def user_rejects(proposal):
+            return {"decision": "reject", "notes": "يحتاج تحسين"}
+
+        builder = BuilderAgent(data_dir=tmp)
+        app = builder.build_app("translation_qa")
+        app.status = "testing"
+        app.test_results = {"accuracy": 0.8}
+
+        result = builder.request_release(app.app_id, callback=user_rejects)
+        assert result["status"] == "rejected"
+        assert app.status == "rejected"
+        # التطبيق المرفوض لا يعمل
+        run_result = builder.run_app(app.app_id, "نص")
+        assert run_result["processed"] is False
+        print("  ✓ رفض الإصدار")
+    finally:
+        shutil.rmtree(tmp)
+
+
+def test_builder_defer_release():
+    """اختبار تأجيل الإصدار."""
+    tmp = tempfile.mkdtemp()
+    try:
+        def user_defers(proposal):
+            return {"decision": "defer"}
+
+        builder = BuilderAgent(data_dir=tmp)
+        app = builder.build_app("bidi_tool")
+        app.status = "testing"
+        app.test_results = {"accuracy": 0.85}
+
+        result = builder.request_release(app.app_id, callback=user_defers)
+        assert result["status"] == "deferred"
+        assert app.status == "awaiting_approval"
+        print("  ✓ تأجيل الإصدار")
+    finally:
+        shutil.rmtree(tmp)
+
+
+def test_builder_modify_before_release():
+    """اختبار طلب تعديل قبل الإصدار."""
+    tmp = tempfile.mkdtemp()
+    try:
+        def user_wants_changes(proposal):
+            return {"decision": "modify", "notes": "أضف قاعدة للتاء المربوطة"}
+
+        builder = BuilderAgent(data_dir=tmp)
+        app = builder.build_app("spellchecker")
+        app.status = "testing"
+        app.test_results = {"accuracy": 0.9}
+
+        result = builder.request_release(app.app_id, callback=user_wants_changes)
+        assert result["status"] == "needs_modification"
+        assert app.status == "draft"  # رجع لمسودة
+        print("  ✓ طلب تعديل قبل الإصدار")
+    finally:
+        shutil.rmtree(tmp)
+
+
+def test_builder_privacy_always_local():
+    """اختبار أن كل التطبيقات تبقى محلية."""
+    tmp = tempfile.mkdtemp()
+    try:
+        def user_approves(proposal):
+            assert proposal["privacy_level"] == "local_only"
+            return {"decision": "approve"}
+
+        builder = BuilderAgent(data_dir=tmp)
+        app = builder.build_app("smart_glossary")
+        assert app.privacy_level == "local_only"
+
+        app.status = "testing"
+        app.test_results = {"accuracy": 0.8}
+        builder.request_release(app.app_id, callback=user_approves)
+        assert app.privacy_level == "local_only"
+        print("  ✓ السرية — دائماً محلي فقط")
+    finally:
+        shutil.rmtree(tmp)
+
+
+def test_builder_pending_approvals():
+    """اختبار عرض التطبيقات المعلّقة."""
+    tmp = tempfile.mkdtemp()
+    try:
+        builder = BuilderAgent(data_dir=tmp)
+        app1 = builder.build_app("spellchecker")
+        app2 = builder.build_app("translation_qa")
+        app1.status = "awaiting_approval"
+        app2.status = "testing"
+
+        pending = builder.get_pending_approvals()
+        assert len(pending) == 2
+        print("  ✓ عرض التطبيقات المعلّقة")
+    finally:
+        shutil.rmtree(tmp)
+
+
+def test_builder_cycle_with_approval():
+    """اختبار الدورة الكاملة مع طلب الموافقة."""
+    tmp = tempfile.mkdtemp()
+    try:
+        approvals = []
+
+        def track_approvals(proposal):
+            approvals.append(proposal["name_ar"])
+            return {"decision": "approve", "approved_by": "دلال"}
+
+        discovery = DiscoveryAgent(data_dir=tmp)
+        builder = BuilderAgent(
+            data_dir=tmp,
+            discovery_agent=discovery,
+            release_callback=track_approvals,
+        )
+
+        stats = {
+            "normalizer": {"texts_processed": 50, "extra_rules_applied": 0},
+            "qa_evaluator": {"evaluations": 50, "avg_score": 60.0,
+                             "literal_detections": 12, "untranslated_detections": 3,
+                             "passive_issues": 1, "weak_style_issues": 4,
+                             "total_issues": 20},
+            "bidi_fixer": {"texts_processed": 50},
+            "eloquence": {"texts_processed": 50, "total_fixes": 30},
+            "discovery": {"patterns_discovered": 6, "rules_generated": 2,
+                          "algorithms_created": 0, "errors_collected": 30},
+            "builder": {"apps_built": 0},
+        }
+        summary = builder.run_builder_cycle(stats, release_callback=track_approvals)
+        assert "release_requests" in summary
+        assert "awaiting_approval" in summary
+        print("  ✓ دورة المُنتِج مع طلب الموافقة")
+    finally:
+        shutil.rmtree(tmp)
+
+
+def test_builder_stats_track_decisions():
+    """اختبار أن الإحصائيات تتبع قرارات المستخدم."""
+    tmp = tempfile.mkdtemp()
+    try:
+        builder = BuilderAgent(data_dir=tmp)
+        app1 = builder.build_app("spellchecker")
+        app1.status = "testing"
+        app1.test_results = {"accuracy": 0.9}
+
+        app2 = builder.build_app("bidi_tool")
+        app2.status = "testing"
+        app2.test_results = {"accuracy": 0.8}
+
+        builder.request_release(app1.app_id,
+                                callback=lambda p: {"decision": "approve"})
+        builder.request_release(app2.app_id,
+                                callback=lambda p: {"decision": "reject", "notes": "لا"})
+
+        stats = builder.get_stats()
+        assert stats["user_approvals"] == 1
+        assert stats["user_rejections"] == 1
+        assert stats["apps_released"] == 1
+        assert stats["apps_rejected"] == 1
+        print("  ✓ إحصائيات قرارات المستخدم")
     finally:
         shutil.rmtree(tmp)
 
@@ -792,6 +1001,15 @@ def main():
             test_builder_save_load,
             test_builder_cycle,
             test_builder_with_discovery_learning,
+            test_builder_no_release_without_approval,
+            test_builder_approve_release,
+            test_builder_reject_release,
+            test_builder_defer_release,
+            test_builder_modify_before_release,
+            test_builder_privacy_always_local,
+            test_builder_pending_approvals,
+            test_builder_cycle_with_approval,
+            test_builder_stats_track_decisions,
         ]),
         ("خط الأنابيب", [
             test_pipeline_basic,
