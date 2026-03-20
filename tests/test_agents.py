@@ -1,5 +1,5 @@
 """
-اختبارات الوكلاء الخمسة وخط الأنابيب.
+اختبارات الوكلاء الستة وخط الأنابيب.
 """
 
 import sys
@@ -14,6 +14,7 @@ sys.path.insert(0, os.path.join(os.path.dirname(__file__), ".."))
 from src.agents.normalizer import NormalizerAgent
 from src.agents.qa_evaluator import QAEvaluatorAgent
 from src.agents.bidi_fixer import BidiFixerAgent
+from src.agents.eloquence import EloquenceAgent
 from src.agents.discovery import DiscoveryAgent
 from src.agents.builder import BuilderAgent
 from src.pipeline import Pipeline
@@ -323,7 +324,123 @@ def test_bidi_stats():
 
 
 # ═══════════════════════════════════════════
-# اختبارات وكيل 4: المكتشف
+# اختبارات وكيل 4: الفصاحة
+# ═══════════════════════════════════════════
+
+def test_eloquence_passive_voice():
+    agent = EloquenceAgent()
+    result = agent.improve("يتم إرسال البيانات إلى الخادم")
+    assert "يُرسَل" in result.improved_text
+    assert "يتم إرسال" not in result.improved_text
+    assert result.was_modified
+    print("  ✓ تحويل المبني للمجهول (يتم → يُفعل)")
+
+
+def test_eloquence_passive_past():
+    agent = EloquenceAgent()
+    result = agent.improve("تم إنشاء الملف بنجاح")
+    assert "أُنشئ" in result.improved_text
+    assert "تم إنشاء" not in result.improved_text
+    print("  ✓ تحويل الماضي المبني للمجهول (تم → فُعِل)")
+
+
+def test_eloquence_padding_bishakl():
+    agent = EloquenceAgent()
+    result = agent.improve("النظام يعمل بشكل سريع")
+    assert "سريعاً" in result.improved_text
+    assert "بشكل سريع" not in result.improved_text
+    print("  ✓ إزالة 'بشكل' واستبدالها بالحال")
+
+
+def test_eloquence_padding_amaliya():
+    agent = EloquenceAgent()
+    result = agent.improve("عملية التحديث تستغرق وقتاً")
+    assert "التحديث" in result.improved_text
+    assert "عملية التحديث" not in result.improved_text
+    print("  ✓ إزالة 'عملية' الزائدة")
+
+
+def test_eloquence_calque_yaleb():
+    agent = EloquenceAgent()
+    result = agent.improve("التشفير يلعب دوراً مهماً في الحماية")
+    assert "يؤدي دوراً" in result.improved_text
+    assert "يلعب دوراً" not in result.improved_text
+    print("  ✓ إصلاح 'يلعب دوراً' → 'يؤدي دوراً'")
+
+
+def test_eloquence_calque_yatabar():
+    agent = EloquenceAgent()
+    result = agent.improve("هذا البرنامج يعتبر من أقوى البرامج")
+    assert "يُعَدّ من" in result.improved_text
+    print("  ✓ إصلاح 'يعتبر من' → 'يُعَدّ من'")
+
+
+def test_eloquence_connectors():
+    agent = EloquenceAgent()
+    result = agent.improve("من الممكن أن يحدث خطأ في النظام")
+    assert "قد" in result.improved_text
+    assert "من الممكن أن" not in result.improved_text
+    print("  ✓ تحسين حروف الربط")
+
+
+def test_eloquence_grammar_comparative():
+    agent = EloquenceAgent()
+    result = agent.improve("هذا النظام أكثر سرعة من غيره")
+    assert "أسرع" in result.improved_text
+    assert "أكثر سرعة" not in result.improved_text
+    print("  ✓ أفعل التفضيل بدل 'أكثر + مصدر'")
+
+
+def test_eloquence_grammar_hunaka():
+    agent = EloquenceAgent()
+    result = agent.improve("يوجد هناك خطأ في الكود")
+    assert "ثمة" in result.improved_text
+    assert "يوجد هناك" not in result.improved_text
+    print("  ✓ 'ثمة' بدل 'يوجد هناك'")
+
+
+def test_eloquence_scoring():
+    agent = EloquenceAgent()
+    bad_text = "يتم إرسال البيانات بشكل سريع ومن الممكن أن يتم حذف الملفات"
+    good_text = "يُرسَل البيانات سريعاً وقد يُحذَف الملفات"
+    bad_score = agent.score_eloquence(bad_text)
+    good_score = agent.score_eloquence(good_text)
+    assert good_score > bad_score
+    print("  ✓ تقييم الفصاحة (نص جيد > نص ركيك)")
+
+
+def test_eloquence_combined():
+    """اختبار شامل — عدة مشاكل في نص واحد."""
+    agent = EloquenceAgent()
+    text = "تم تنفيذ عملية التحديث بشكل كبير وبالتالي يعتبر من أفضل الأنظمة"
+    result = agent.improve(text)
+    assert result.was_modified
+    assert len(result.fixes) >= 3  # على الأقل 3 إصلاحات
+    assert result.eloquence_score_after > result.eloquence_score_before
+    print("  ✓ إصلاحات متعددة في نص واحد")
+
+
+def test_eloquence_clean_text():
+    """نص فصيح لا يحتاج تعديل."""
+    agent = EloquenceAgent()
+    result = agent.improve("أُرسِلت الرسالة بنجاح")
+    assert len(result.fixes) == 0
+    print("  ✓ نص نظيف — لا تعديل")
+
+
+def test_eloquence_stats():
+    agent = EloquenceAgent()
+    agent.improve("يتم إرسال البيانات بشكل سريع")
+    stats = agent.get_stats()
+    assert stats["texts_processed"] == 1
+    assert stats["total_fixes"] >= 2
+    assert stats["passive_fixes"] >= 1
+    assert stats["padding_removals"] >= 1
+    print("  ✓ إحصائيات الفصاحة")
+
+
+# ═══════════════════════════════════════════
+# اختبارات وكيل 5: المكتشف
 # ═══════════════════════════════════════════
 
 def test_discovery_collect_errors():
@@ -614,7 +731,7 @@ def test_pipeline_auto_approve():
 
 def main():
     print("\n" + "=" * 60)
-    print("  اختبارات نظام TarjimTech — الوكلاء الخمسة")
+    print("  اختبارات نظام TarjimTech — الوكلاء الستة")
     print("=" * 60)
 
     sections = [
@@ -647,13 +764,28 @@ def main():
             test_bidi_clean_marks,
             test_bidi_stats,
         ]),
-        ("وكيل 4: المكتشف", [
+        ("وكيل 4: الفصاحة", [
+            test_eloquence_passive_voice,
+            test_eloquence_passive_past,
+            test_eloquence_padding_bishakl,
+            test_eloquence_padding_amaliya,
+            test_eloquence_calque_yaleb,
+            test_eloquence_calque_yatabar,
+            test_eloquence_connectors,
+            test_eloquence_grammar_comparative,
+            test_eloquence_grammar_hunaka,
+            test_eloquence_scoring,
+            test_eloquence_combined,
+            test_eloquence_clean_text,
+            test_eloquence_stats,
+        ]),
+        ("وكيل 5: المكتشف", [
             test_discovery_collect_errors,
             test_discovery_pattern_analysis,
             test_discovery_save_load,
             test_discovery_cycle,
         ]),
-        ("وكيل 5: المُنتِج", [
+        ("وكيل 6: المُنتِج", [
             test_builder_observe,
             test_builder_build_app,
             test_builder_build_custom_app,

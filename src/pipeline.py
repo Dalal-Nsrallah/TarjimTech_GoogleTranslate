@@ -1,22 +1,24 @@
 """
 خط الأنابيب (Pipeline)
 ========================
-يُشغّل الوكلاء الخمسة بالتسلسل الصحيح ويربطهم ببعض.
+يُشغّل الوكلاء الستة بالتسلسل الصحيح ويربطهم ببعض.
 
 ترتيب التنفيذ:
   1. المطبّع → يُطبّع النص العربي
-  2. مقيّم الجودة → يقيّم جودة الترجمة
+  2. مقيّم الجودة → يقيّم جودة الترجمة (تفاعلي)
   3. معالج BiDi → يصلح الاتجاهات
-  4. المكتشف → يجمع الأخطاء ويكتشف أنماط
-  5. المُنتِج → يراقب ويبني تطبيقات
+  4. الفصاحة → يقرأ النص كاملاً ويحسّن اللغة العربية
+  5. المكتشف → يجمع الأخطاء ويكتشف أنماط
+  6. المُنتِج → يراقب ويبني تطبيقات
 
 المدخلات:
   - source: النص المصدر (إنجليزي)
   - target: النص المترجم (عربي)
 
 المخرجات:
-  - النص المُحسّن
+  - النص المُحسّن بعربية فصيحة
   - تقرير الجودة
+  - تقرير الفصاحة
   - اكتشافات جديدة
   - تطبيقات مبنية
 """
@@ -29,6 +31,7 @@ from typing import Optional, Callable
 from .agents.normalizer import NormalizerAgent
 from .agents.qa_evaluator import QAEvaluatorAgent
 from .agents.bidi_fixer import BidiFixerAgent
+from .agents.eloquence import EloquenceAgent
 from .agents.discovery import DiscoveryAgent
 from .agents.builder import BuilderAgent
 
@@ -56,6 +59,12 @@ class PipelineResult:
     target_bidi_fixed: str = ""
     bidi_issues: list = field(default_factory=list)
 
+    # مخرجات وكيل الفصاحة
+    target_eloquent: str = ""
+    eloquence_fixes: list = field(default_factory=list)
+    eloquence_score_before: float = 0.0
+    eloquence_score_after: float = 0.0
+
     # مخرجات المكتشف
     discovery_summary: dict = field(default_factory=dict)
 
@@ -75,7 +84,7 @@ class PipelineResult:
 
 class Pipeline:
     """
-    خط الأنابيب الرئيسي — يربط الوكلاء الخمسة.
+    خط الأنابيب الرئيسي — يربط الوكلاء الستة.
     """
 
     def __init__(self, data_dir: str = "data",
@@ -92,6 +101,7 @@ class Pipeline:
             discovered_rules_path=rules_path,
         )
         self.bidi_fixer = BidiFixerAgent()
+        self.eloquence = EloquenceAgent(extra_rules_path=rules_path)
         self.discovery = DiscoveryAgent(data_dir=str(self.data_dir))
         self.builder = BuilderAgent(
             data_dir=str(self.data_dir),
@@ -114,7 +124,6 @@ class Pipeline:
             run_discovery: تشغيل وكيل المكتشف
             run_builder: تشغيل وكيل المُنتِج
             decision_callback: دالة تفاعلية لأخذ رأي المستخدم
-                callback(proposals) -> decisions
             auto_approve: اعتماد تلقائي للمشاكل العالية والحرجة
 
         Returns:
@@ -133,15 +142,12 @@ class Pipeline:
 
         # ── وكيل 2: مقيّم الجودة (تفاعلي) ──
         if decision_callback:
-            # الوضع التفاعلي: يأخذ رأي المستخدم
             qa_result = self.qa_evaluator.interactive_review(
                 source, current_text, decision_callback
             )
         elif auto_approve:
-            # الوضع التلقائي: يعتمد المشاكل الخطيرة تلقائياً
             qa_result = self.qa_evaluator.auto_review(source, current_text)
         else:
-            # الوضع الكلاسيكي: تقييم فقط بدون تطبيق
             qa_result = self.qa_evaluator.evaluate(source, current_text)
 
         result.quality_score = qa_result.score
@@ -160,11 +166,9 @@ class Pipeline:
             for i in qa_result.issues
         ]
 
-        # اقتراحات (للعرض)
         if qa_result.issues:
             result.quality_proposals = self.qa_evaluator.propose_fixes(qa_result)
 
-        # نتيجة التحقق
         if qa_result.verification:
             v = qa_result.verification
             result.quality_verification = {
@@ -174,7 +178,6 @@ class Pipeline:
                 "all_clear": v.all_clear,
             }
 
-        # إذا تم تطبيق تعديلات، استخدم النص المعتمد
         if qa_result.approved_text:
             current_text = qa_result.approved_text
 
@@ -191,27 +194,52 @@ class Pipeline:
         ]
         current_text = bidi_result.fixed
 
-        # ── وكيل 4: المكتشف ──
+        # ── وكيل 4: الفصاحة ──
+        eloquence_result = self.eloquence.improve(current_text)
+        result.target_eloquent = eloquence_result.improved_text
+        result.eloquence_fixes = [
+            {
+                "rule": f.rule_name,
+                "category": f.category,
+                "original": f.original,
+                "improved": f.improved,
+                "explanation": f.explanation,
+            }
+            for f in eloquence_result.fixes
+        ]
+        result.eloquence_score_before = eloquence_result.eloquence_score_before
+        result.eloquence_score_after = eloquence_result.eloquence_score_after
+        current_text = eloquence_result.improved_text
+
+        # ── وكيل 5: المكتشف ──
         if run_discovery:
             self.discovery.collect_from_normalizer(norm_result)
             self.discovery.collect_from_qa(qa_result)
             self.discovery.collect_from_bidi(bidi_result)
+            # جمع بيانات الفصاحة أيضاً
+            if eloquence_result.was_modified:
+                for fix in eloquence_result.fixes:
+                    self.discovery.collect_error(
+                        agent="eloquence",
+                        category=fix.category,
+                        source_text=fix.original,
+                        target_text=fix.improved,
+                        error_detail=fix.explanation,
+                        severity="low",
+                    )
 
-            # تشغيل دورة اكتشاف كل 10 نصوص
             self.run_count += 1
             if self.run_count % 10 == 0:
                 discovery_summary = self.discovery.run_discovery_cycle()
                 result.discovery_summary = discovery_summary
 
-        # ── وكيل 5: المُنتِج ──
+        # ── وكيل 6: المُنتِج ──
         if run_builder:
-            # المُنتِج يراقب كل 10 نصوص
             if self.run_count % 10 == 0:
                 agent_stats = self._collect_all_stats()
                 builder_summary = self.builder.run_builder_cycle(agent_stats)
                 result.builder_summary = builder_summary
 
-            # تشغيل التطبيقات المُصدرة على النص
             app_results = self.builder.run_all_released_apps(current_text)
             if app_results:
                 result.app_results = app_results
@@ -224,21 +252,12 @@ class Pipeline:
         return result
 
     def process_batch(self, pairs: list[tuple[str, str]]) -> list[PipelineResult]:
-        """
-        معالجة دفعة من الترجمات.
-
-        Args:
-            pairs: قائمة أزواج (source, target)
-
-        Returns:
-            قائمة النتائج
-        """
+        """معالجة دفعة من الترجمات."""
         results = []
         for source, target in pairs:
             result = self.process(source, target)
             results.append(result)
 
-        # تشغيل دورة اكتشاف نهائية
         self.discovery.run_discovery_cycle()
         agent_stats = self._collect_all_stats()
         self.builder.run_builder_cycle(agent_stats)
@@ -251,6 +270,7 @@ class Pipeline:
             "normalizer": self.normalizer.get_stats(),
             "qa_evaluator": self.qa_evaluator.get_stats(),
             "bidi_fixer": self.bidi_fixer.get_stats(),
+            "eloquence": self.eloquence.get_stats(),
             "discovery": self.discovery.get_stats(),
             "builder": self.builder.get_stats(),
         }
@@ -267,15 +287,12 @@ class Pipeline:
         }
 
     def force_discovery_cycle(self) -> dict:
-        """تشغيل دورة اكتشاف يدوياً."""
         return self.discovery.run_discovery_cycle()
 
     def force_builder_cycle(self) -> dict:
-        """تشغيل دورة المُنتِج يدوياً."""
         agent_stats = self._collect_all_stats()
         return self.builder.run_builder_cycle(agent_stats)
 
     def save_all(self):
-        """حفظ حالة كل الوكلاء."""
         self.discovery.save_all()
         self.builder.save_all()
