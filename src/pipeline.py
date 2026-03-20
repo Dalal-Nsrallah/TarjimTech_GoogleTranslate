@@ -28,6 +28,7 @@ from pathlib import Path
 from dataclasses import dataclass, field, asdict
 from typing import Optional, Callable
 
+from .exporter import Exporter
 from .agents.normalizer import NormalizerAgent
 from .agents.qa_evaluator import QAEvaluatorAgent
 from .agents.bidi_fixer import BidiFixerAgent
@@ -296,3 +297,29 @@ class Pipeline:
     def save_all(self):
         self.discovery.save_all()
         self.builder.save_all()
+
+    # ─── التصدير ───
+
+    def export_txt(self, result: PipelineResult,
+                   output_dir: str = "output", filename: str = None) -> str:
+        """تصدير النتيجة كملف TXT."""
+        exporter = Exporter(output_dir=output_dir)
+        return exporter.to_txt(result, filename)
+
+    def export_docx(self, result: PipelineResult,
+                    output_dir: str = "output", filename: str = None) -> str:
+        """تصدير النتيجة كملف Word."""
+        exporter = Exporter(output_dir=output_dir)
+        return exporter.to_docx(result, filename)
+
+    def export_json(self, result: PipelineResult,
+                    output_dir: str = "output", filename: str = None) -> str:
+        """تصدير التقرير الكامل كـ JSON."""
+        exporter = Exporter(output_dir=output_dir)
+        return exporter.to_json(result, filename)
+
+    def export_all(self, result: PipelineResult,
+                   output_dir: str = "output") -> dict:
+        """تصدير بكل الصيغ (TXT + DOCX + JSON)."""
+        exporter = Exporter(output_dir=output_dir)
+        return exporter.export_all(result)

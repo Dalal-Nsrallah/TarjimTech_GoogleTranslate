@@ -17,7 +17,8 @@ from src.agents.bidi_fixer import BidiFixerAgent
 from src.agents.eloquence import EloquenceAgent
 from src.agents.discovery import DiscoveryAgent
 from src.agents.builder import BuilderAgent
-from src.pipeline import Pipeline
+from src.pipeline import Pipeline, PipelineResult
+from src.exporter import Exporter
 
 
 # ═══════════════════════════════════════════
@@ -935,6 +936,141 @@ def test_pipeline_auto_approve():
 
 
 # ═══════════════════════════════════════════
+# اختبارات المُصدّر (Exporter)
+# ═══════════════════════════════════════════
+
+def _make_sample_result():
+    """إنشاء نتيجة وهمية للاختبارات."""
+    return PipelineResult(
+        source="The system uses encryption to protect data",
+        target_original="النظام يستخدم encryption لحمايه البيانات",
+        target_normalized="النظام يستخدم encryption لحماية البيانات",
+        normalizer_changes=[{"type": "taa_marbuta", "original": "لحمايه", "fixed": "لحماية"}],
+        quality_score=72.0,
+        quality_final_score=85.0,
+        quality_grade="جيد",
+        quality_issues=[{
+            "issue_id": "Q001",
+            "category": "كلمة_غير_مترجمة",
+            "severity": "high",
+            "description": "كلمة encryption غير مترجمة",
+            "suggestion": "تشفير",
+            "user_decision": "approve",
+            "applied": True,
+        }],
+        target_bidi_fixed="النظام يستخدم التشفير لحماية البيانات",
+        target_eloquent="يستخدم النظام التشفير لحماية البيانات",
+        eloquence_fixes=[{
+            "rule": "word_order",
+            "category": "grammar",
+            "original": "النظام يستخدم",
+            "improved": "يستخدم النظام",
+            "explanation": "تقديم الفعل على الفاعل",
+        }],
+        eloquence_score_before=65.0,
+        eloquence_score_after=88.0,
+        final_text="يستخدم النظام التشفير لحماية البيانات",
+    )
+
+
+def test_exporter_txt():
+    tmp = tempfile.mkdtemp()
+    try:
+        exporter = Exporter(output_dir=tmp)
+        result = _make_sample_result()
+        path = exporter.to_txt(result, "test_output.txt")
+        assert os.path.exists(path)
+        with open(path, "r", encoding="utf-8") as f:
+            content = f.read()
+        assert "يستخدم النظام التشفير" in content
+        assert "TarjimTech" in content
+        assert "72.0" in content or "72" in content
+        assert "تقديم الفعل" in content
+        print("  ✓ تصدير TXT")
+    finally:
+        shutil.rmtree(tmp)
+
+
+def test_exporter_txt_auto_filename():
+    tmp = tempfile.mkdtemp()
+    try:
+        exporter = Exporter(output_dir=tmp)
+        result = _make_sample_result()
+        path = exporter.to_txt(result)
+        assert os.path.exists(path)
+        assert path.endswith(".txt")
+        print("  ✓ تصدير TXT — اسم تلقائي")
+    finally:
+        shutil.rmtree(tmp)
+
+
+def test_exporter_json():
+    tmp = tempfile.mkdtemp()
+    try:
+        exporter = Exporter(output_dir=tmp)
+        result = _make_sample_result()
+        path = exporter.to_json(result, "test_report.json")
+        assert os.path.exists(path)
+        with open(path, "r", encoding="utf-8") as f:
+            data = json.load(f)
+        assert data["source"] == result.source
+        assert data["final_text"] == result.final_text
+        assert "exported_at" in data
+        print("  ✓ تصدير JSON")
+    finally:
+        shutil.rmtree(tmp)
+
+
+def test_exporter_docx_fallback():
+    """اختبار أن DOCX يعود لـ TXT إذا python-docx غير مثبتة."""
+    tmp = tempfile.mkdtemp()
+    try:
+        exporter = Exporter(output_dir=tmp)
+        result = _make_sample_result()
+        path = exporter.to_docx(result, "test_output.docx")
+        # إما ملف docx حقيقي أو fallback لـ txt
+        assert os.path.exists(path.split("\n")[0])
+        print("  ✓ تصدير DOCX (أو fallback)")
+    finally:
+        shutil.rmtree(tmp)
+
+
+def test_exporter_export_all():
+    tmp = tempfile.mkdtemp()
+    try:
+        exporter = Exporter(output_dir=tmp)
+        result = _make_sample_result()
+        paths = exporter.export_all(result, "test_all")
+        assert "txt" in paths
+        assert "json" in paths
+        assert "docx" in paths
+        assert os.path.exists(paths["txt"])
+        assert os.path.exists(paths["json"])
+        print("  ✓ تصدير الكل دفعة واحدة")
+    finally:
+        shutil.rmtree(tmp)
+
+
+def test_pipeline_export():
+    """اختبار التصدير من خط الأنابيب مباشرة."""
+    tmp = tempfile.mkdtemp()
+    output_dir = os.path.join(tmp, "output")
+    try:
+        pipeline = Pipeline(data_dir=tmp)
+        result = pipeline.process(
+            source="Hello world",
+            target="مرحبا بالعالم",
+        )
+        path = pipeline.export_txt(result, output_dir=output_dir)
+        assert os.path.exists(path)
+        path_json = pipeline.export_json(result, output_dir=output_dir)
+        assert os.path.exists(path_json)
+        print("  ✓ التصدير من خط الأنابيب")
+    finally:
+        shutil.rmtree(tmp)
+
+
+# ═══════════════════════════════════════════
 # تشغيل كل الاختبارات
 # ═══════════════════════════════════════════
 
@@ -1016,6 +1152,14 @@ def main():
             test_pipeline_full_flow,
             test_pipeline_interactive,
             test_pipeline_auto_approve,
+        ]),
+        ("المُصدّر (Exporter)", [
+            test_exporter_txt,
+            test_exporter_txt_auto_filename,
+            test_exporter_json,
+            test_exporter_docx_fallback,
+            test_exporter_export_all,
+            test_pipeline_export,
         ]),
     ]
 
