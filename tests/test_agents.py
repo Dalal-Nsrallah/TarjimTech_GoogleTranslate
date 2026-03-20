@@ -150,6 +150,142 @@ def test_qa_glossary():
         os.unlink(glossary_path)
 
 
+def test_qa_interactive_approve():
+    """اختبار الدورة التفاعلية — المستخدم يعتمد التصحيح."""
+    agent = QAEvaluatorAgent()
+
+    def user_approves_all(proposals):
+        return [{"issue_id": p["issue_id"], "decision": "approve"} for p in proposals]
+
+    result = agent.interactive_review(
+        "Please look up the information",
+        "رجاء انظر فوق المعلومات",
+        decision_callback=user_approves_all,
+    )
+    # يجب أن يُطبّق التصحيح
+    assert "ابحث عن" in result.approved_text
+    assert "انظر فوق" not in result.approved_text
+    # يجب أن يتحقق
+    assert result.verification is not None
+    assert result.verification.fixes_verified > 0
+    print("  ✓ الدورة التفاعلية — اعتماد")
+
+
+def test_qa_interactive_reject():
+    """اختبار الدورة التفاعلية — المستخدم يرفض التصحيح."""
+    agent = QAEvaluatorAgent()
+
+    def user_rejects_all(proposals):
+        return [{"issue_id": p["issue_id"], "decision": "reject"} for p in proposals]
+
+    result = agent.interactive_review(
+        "Please look up the information",
+        "رجاء انظر فوق المعلومات",
+        decision_callback=user_rejects_all,
+    )
+    # النص لم يتغيّر لأن المستخدم رفض
+    assert "انظر فوق" in result.approved_text
+    print("  ✓ الدورة التفاعلية — رفض")
+
+
+def test_qa_interactive_modify():
+    """اختبار الدورة التفاعلية — المستخدم يعدّل بنفسه."""
+    agent = QAEvaluatorAgent()
+
+    def user_modifies(proposals):
+        decisions = []
+        for p in proposals:
+            if p["category"] == "ترجمة_حرفية":
+                decisions.append({
+                    "issue_id": p["issue_id"],
+                    "decision": "modify",
+                    "correction": "ابحثي عن",  # تصحيح مخصص من المستخدم
+                })
+            else:
+                decisions.append({
+                    "issue_id": p["issue_id"],
+                    "decision": "reject",
+                })
+        return decisions
+
+    result = agent.interactive_review(
+        "Please look up the information",
+        "رجاء انظر فوق المعلومات",
+        decision_callback=user_modifies,
+    )
+    assert "ابحثي عن" in result.approved_text
+    print("  ✓ الدورة التفاعلية — تعديل مخصص")
+
+
+def test_qa_auto_review():
+    """اختبار الاعتماد التلقائي."""
+    agent = QAEvaluatorAgent()
+    result = agent.auto_review(
+        "Please look up the information",
+        "رجاء انظر فوق المعلومات",
+        auto_approve_severity=["high", "critical"],
+    )
+    # الترجمة الحرفية = high → يجب أن تُعتمد تلقائياً
+    assert "ابحث عن" in result.approved_text
+    assert result.final_score > result.score  # الدرجة تحسّنت
+    print("  ✓ الاعتماد التلقائي")
+
+
+def test_qa_verify_after_apply():
+    """اختبار التحقق الشامل بعد التطبيق."""
+    agent = QAEvaluatorAgent()
+
+    # تقييم
+    qa_result = agent.evaluate(
+        "Please look up the data",
+        "رجاء انظر فوق البيانات"
+    )
+    assert len(qa_result.issues) > 0
+
+    # اقتراحات
+    proposals = agent.propose_fixes(qa_result)
+    assert len(proposals) > 0
+    assert proposals[0]["awaiting_decision"] is True
+
+    # قرارات — اعتمد الكل
+    decisions = [{"issue_id": p["issue_id"], "decision": "approve"} for p in proposals]
+    qa_result = agent.submit_decisions(qa_result, decisions)
+
+    # تطبيق
+    qa_result = agent.apply_approved(qa_result)
+    assert qa_result.approved_text != qa_result.target
+
+    # تحقق
+    qa_result = agent.verify(qa_result)
+    assert qa_result.verification is not None
+    assert qa_result.final_score >= qa_result.score
+    print("  ✓ التحقق الشامل (5 مراحل)")
+
+
+def test_qa_interactive_stats():
+    """اختبار أن الإحصائيات تُحدّث في الدورة التفاعلية."""
+    agent = QAEvaluatorAgent()
+
+    def mixed_decisions(proposals):
+        decisions = []
+        for i, p in enumerate(proposals):
+            if i == 0:
+                decisions.append({"issue_id": p["issue_id"], "decision": "approve"})
+            else:
+                decisions.append({"issue_id": p["issue_id"], "decision": "reject"})
+        return decisions
+
+    agent.interactive_review(
+        "Please look up the information",
+        "رجاء انظر فوق المعلومات",
+        decision_callback=mixed_decisions,
+    )
+    stats = agent.get_stats()
+    assert stats["user_approvals"] >= 1
+    assert stats["fixes_applied"] >= 1
+    print("  ✓ إحصائيات الدورة التفاعلية")
+
+
 # ═══════════════════════════════════════════
 # اختبارات وكيل 3: معالج BiDi
 # ═══════════════════════════════════════════
@@ -432,6 +568,46 @@ def test_pipeline_full_flow():
         shutil.rmtree(tmp)
 
 
+def test_pipeline_interactive():
+    """اختبار خط الأنابيب مع الوضع التفاعلي."""
+    tmp = tempfile.mkdtemp()
+    try:
+        pipeline = Pipeline(data_dir=tmp)
+
+        def approve_all(proposals):
+            return [{"issue_id": p["issue_id"], "decision": "approve"} for p in proposals]
+
+        result = pipeline.process(
+            source="Please look up the information",
+            target="رجاء انظر فوق المعلومات",
+            decision_callback=approve_all,
+        )
+        # التعديل المعتمد يجب أن يظهر في النص النهائي
+        assert "انظر فوق" not in result.final_text
+        assert result.quality_final_score >= result.quality_score
+        assert result.quality_verification.get("fixes_verified", 0) > 0
+        print("  ✓ خط الأنابيب التفاعلي")
+    finally:
+        shutil.rmtree(tmp)
+
+
+def test_pipeline_auto_approve():
+    """اختبار خط الأنابيب مع الاعتماد التلقائي."""
+    tmp = tempfile.mkdtemp()
+    try:
+        pipeline = Pipeline(data_dir=tmp)
+        result = pipeline.process(
+            source="Please look up the data",
+            target="رجاء انظر فوق البيانات",
+            auto_approve=True,
+        )
+        # الترجمة الحرفية (high) تُعتمد تلقائياً
+        assert "انظر فوق" not in result.final_text
+        print("  ✓ خط الأنابيب مع اعتماد تلقائي")
+    finally:
+        shutil.rmtree(tmp)
+
+
 # ═══════════════════════════════════════════
 # تشغيل كل الاختبارات
 # ═══════════════════════════════════════════
@@ -458,6 +634,12 @@ def main():
             test_qa_scoring,
             test_qa_grade,
             test_qa_glossary,
+            test_qa_interactive_approve,
+            test_qa_interactive_reject,
+            test_qa_interactive_modify,
+            test_qa_auto_review,
+            test_qa_verify_after_apply,
+            test_qa_interactive_stats,
         ]),
         ("وكيل 3: معالج BiDi", [
             test_bidi_latin_isolation,
@@ -482,6 +664,8 @@ def main():
         ("خط الأنابيب", [
             test_pipeline_basic,
             test_pipeline_full_flow,
+            test_pipeline_interactive,
+            test_pipeline_auto_approve,
         ]),
     ]
 

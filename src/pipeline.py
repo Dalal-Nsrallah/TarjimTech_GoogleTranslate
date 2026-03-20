@@ -24,7 +24,7 @@
 import json
 from pathlib import Path
 from dataclasses import dataclass, field, asdict
-from typing import Optional
+from typing import Optional, Callable
 
 from .agents.normalizer import NormalizerAgent
 from .agents.qa_evaluator import QAEvaluatorAgent
@@ -46,8 +46,11 @@ class PipelineResult:
 
     # مخرجات مقيّم الجودة
     quality_score: float = 0.0
+    quality_final_score: float = 0.0
     quality_grade: str = ""
     quality_issues: list = field(default_factory=list)
+    quality_proposals: list = field(default_factory=list)
+    quality_verification: dict = field(default_factory=dict)
 
     # مخرجات معالج BiDi
     target_bidi_fixed: str = ""
@@ -99,7 +102,9 @@ class Pipeline:
 
     def process(self, source: str, target: str,
                 run_discovery: bool = True,
-                run_builder: bool = True) -> PipelineResult:
+                run_builder: bool = True,
+                decision_callback: Optional[Callable] = None,
+                auto_approve: bool = False) -> PipelineResult:
         """
         معالجة ترجمة كاملة عبر كل الوكلاء.
 
@@ -108,6 +113,9 @@ class Pipeline:
             target: النص المترجم (العربي)
             run_discovery: تشغيل وكيل المكتشف
             run_builder: تشغيل وكيل المُنتِج
+            decision_callback: دالة تفاعلية لأخذ رأي المستخدم
+                callback(proposals) -> decisions
+            auto_approve: اعتماد تلقائي للمشاكل العالية والحرجة
 
         Returns:
             PipelineResult مع كل النتائج
@@ -123,19 +131,52 @@ class Pipeline:
         result.normalizer_changes = norm_result.changes
         current_text = norm_result.normalized
 
-        # ── وكيل 2: مقيّم الجودة ──
-        qa_result = self.qa_evaluator.evaluate(source, current_text)
+        # ── وكيل 2: مقيّم الجودة (تفاعلي) ──
+        if decision_callback:
+            # الوضع التفاعلي: يأخذ رأي المستخدم
+            qa_result = self.qa_evaluator.interactive_review(
+                source, current_text, decision_callback
+            )
+        elif auto_approve:
+            # الوضع التلقائي: يعتمد المشاكل الخطيرة تلقائياً
+            qa_result = self.qa_evaluator.auto_review(source, current_text)
+        else:
+            # الوضع الكلاسيكي: تقييم فقط بدون تطبيق
+            qa_result = self.qa_evaluator.evaluate(source, current_text)
+
         result.quality_score = qa_result.score
+        result.quality_final_score = qa_result.final_score
         result.quality_grade = qa_result.grade
         result.quality_issues = [
             {
+                "issue_id": i.issue_id,
                 "category": i.category,
                 "severity": i.severity,
                 "description": i.description,
                 "suggestion": i.suggestion,
+                "user_decision": i.user_decision,
+                "applied": i.applied,
             }
             for i in qa_result.issues
         ]
+
+        # اقتراحات (للعرض)
+        if qa_result.issues:
+            result.quality_proposals = self.qa_evaluator.propose_fixes(qa_result)
+
+        # نتيجة التحقق
+        if qa_result.verification:
+            v = qa_result.verification
+            result.quality_verification = {
+                "fixes_verified": v.fixes_verified,
+                "remaining_issues": len(v.remaining_issues),
+                "new_issues": len(v.new_issues),
+                "all_clear": v.all_clear,
+            }
+
+        # إذا تم تطبيق تعديلات، استخدم النص المعتمد
+        if qa_result.approved_text:
+            current_text = qa_result.approved_text
 
         # ── وكيل 3: معالج BiDi ──
         bidi_result = self.bidi_fixer.fix(current_text)
@@ -174,7 +215,6 @@ class Pipeline:
             app_results = self.builder.run_all_released_apps(current_text)
             if app_results:
                 result.app_results = app_results
-                # استخدام آخر نتيجة معدّلة
                 for ar in reversed(app_results):
                     if ar.get("was_modified"):
                         current_text = ar["result"]
